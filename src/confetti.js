@@ -22,10 +22,14 @@ export function createConfetti(scene) {
   let life = 0;
 
   return {
-    burst(x, width) {
+    /** center: 결승선 중심, heading: 코스 방향(라디안), width: 도로 폭 */
+    burst(center, heading, width) {
       active = true; life = 0; mesh.visible = true;
+      const fx = Math.cos(heading), fz = -Math.sin(heading); // 진행 방향
       for (const q of parts) {
-        q.p.set(x + (Math.random() - 0.5) * 6, 6 + Math.random() * 4, (Math.random() - 0.5) * (width + 4));
+        const a = (Math.random() - 0.5) * 8, b = (Math.random() - 0.5) * (width + 4);
+        q.p.set(center.x + fx * a - fz * b, center.y + 6 + Math.random() * 4, center.z + fz * a + fx * b);
+        q.floor = center.y + 0.05;
         q.v.set((Math.random() - 0.5) * 6, 4 + Math.random() * 6, (Math.random() - 0.5) * 6);
         q.r.set(Math.random() * 6, Math.random() * 6, Math.random() * 6);
         q.rv.set(Math.random() * 10, Math.random() * 10, Math.random() * 10);
@@ -42,7 +46,7 @@ export function createConfetti(scene) {
         q.v.y = Math.max(q.v.y, -1.6);
         q.p.addScaledVector(q.v, dt);
         q.p.x += Math.sin(life * 2 + i) * dt * 0.6;  // 팔랑팔랑
-        if (q.p.y < 0.02) { q.p.y = 0.02; q.v.set(0, 0, 0); q.rv.set(0, 0, 0); q.r.x = -Math.PI / 2; }
+        if (q.p.y < q.floor) { q.p.y = q.floor; q.v.set(0, 0, 0); q.rv.set(0, 0, 0); q.r.x = -Math.PI / 2; }
         q.r.x += q.rv.x * dt; q.r.y += q.rv.y * dt; q.r.z += q.rv.z * dt;
         dummy.position.copy(q.p);
         dummy.rotation.copy(q.r);

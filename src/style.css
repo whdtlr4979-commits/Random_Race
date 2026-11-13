@@ -164,6 +164,13 @@ textarea {
 @keyframes feedIn { from { transform: translateX(20px); opacity: 0; } }
 @keyframes feedOut { to { transform: translateX(10px); opacity: 0; } }
 
+/* ── 미니맵 ── */
+.minimap {
+  position: fixed; z-index: 4; right: var(--gutter-r); bottom: calc(var(--bottom) + 16px);
+  width: 220px; height: 160px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+}
+
 /* ── 카운트다운 ── */
 .countdown {
   position: fixed; inset: 0; z-index: 6; display: grid; place-items: center; pointer-events: none;
@@ -175,7 +182,7 @@ textarea {
 @keyframes pop { 0% { transform: scale(1.8); opacity: 0; } 25% { transform: scale(1); opacity: 1; } 100% { transform: scale(.9); opacity: .0; } }
 
 .slowmo {
-  position: fixed; z-index: 4; left: 50%; bottom: calc(var(--bottom) + 28px); transform: translateX(-50%);
+  position: fixed; z-index: 4; left: 50%; top: calc(var(--top) + 20px); transform: translateX(-50%);
   font-family: var(--font-display); letter-spacing: 0.2em; font-size: 18px;
   background: var(--gold); color: #1a1300; padding: 6px 16px; border-radius: 4px;
   animation: blink 0.6s steps(2) infinite;
@@ -227,6 +234,7 @@ textarea {
   .rank-row .dot { width: 8px; height: 8px; }
   .feed { max-width: calc(100% - 210px); }
   .feed-item { font-size: 12px; }
+  .minimap { width: 132px; height: 96px; bottom: calc(var(--bottom) + 12px); }
   .winner-name { font-size: 34px; }
   .result { top: auto; bottom: calc(var(--bottom) + 12px); left: var(--gutter-l); right: var(--gutter-r); width: auto; max-height: 56%; padding: 16px 16px 14px; gap: 10px; }
 }

@@ -1,8 +1,9 @@
 import * as THREE from 'three';
 import './style.css';
-import { createEnvironment, createTrack, laneZ } from './world.js';
+import { createCourse } from './course.js';
+import { createWorld } from './world.js';
 import { Runner } from './runner.js';
-import { RaceSim, makeRng } from './race.js';
+import { RaceSim, makeRng, startGrid } from './race.js';
 import { createConfetti } from './confetti.js';
 import { sfx, unlockAudio, setMuted, isMuted } from './audio.js';
 
@@ -20,13 +21,13 @@ const ui = {
   setup: $('setup'), names: $('names'), nameCount: $('nameCount'), nameError: $('nameError'),
   winCount: $('winCount'), winMinus: $('winMinus'), winPlus: $('winPlus'), startBtn: $('startBtn'),
   hud: $('hud'), hudMode: $('hudMode'), hudTime: $('hudTime'), progressBar: $('progressBar'), rankList: $('rankList'),
-  feed: $('feed'), countdown: $('countdown'), slowmo: $('slowmo'),
+  feed: $('feed'), countdown: $('countdown'), slowmo: $('slowmo'), minimap: $('minimap'),
   result: $('result'), resultEyebrow: $('resultEyebrow'), winnerNames: $('winnerNames'), resultList: $('resultList'),
   againBtn: $('againBtn'), editBtn: $('editBtn'), soundBtn: $('soundBtn'),
 };
 
-// ───────── 설정 상태 ─────────
-const settings = { mode: 'first', winners: 1, length: 100 };
+// ───────── 설정 ─────────
+const settings = { mode: 'first', winners: 1, length: 400 };
 const store = {
   get(k) { try { return localStorage.getItem(k); } catch { return null; } },
   set(k, v) { try { localStorage.setItem(k, v); } catch { /* 저장 불가 환경 */ } },
@@ -43,7 +44,7 @@ function parseNames(text) {
   });
 }
 
-// ───────── 렌더러 / 씬 ─────────
+// ───────── 렌더러 / 씬 / 코스 ─────────
 const canvas = $('stage');
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -54,22 +55,22 @@ renderer.toneMappingExposure = 1.05;
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 
 const scene = new THREE.Scene();
-const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 1500);
-const env = createEnvironment(scene);
+const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 2000);
+const course = createCourse();
+const world = createWorld(scene, course);
 const confetti = createConfetti(scene);
+const halfW = course.halfW;
 
-const camPos = new THREE.Vector3(-10, 6, 16);
-const camLook = new THREE.Vector3(0, 1, 0);
+const camPos = new THREE.Vector3();
+const camLook = new THREE.Vector3();
 const wantPos = new THREE.Vector3();
 const wantLook = new THREE.Vector3();
-camera.position.copy(camPos);
 
 function resize() {
   const w = window.innerWidth, h = window.innerHeight;
   renderer.setSize(w, h, false);
   camera.aspect = w / h;
-  // 세로 화면에서는 시야를 넓혀 트랙이 잘리지 않게
-  camera.fov = camera.aspect < 0.8 ? 68 : 50;
+  camera.fov = camera.aspect < 0.8 ? 66 : 50;
   camera.updateProjectionMatrix();
 }
 window.addEventListener('resize', resize);
@@ -78,33 +79,110 @@ resize();
 // ───────── 게임 상태 ─────────
 let phase = 'setup'; // setup | countdown | race | result
 let names = [];
-let track = null;
 let runners = [];
 let sim = null;
-let decided = null;    // 당첨자 확정 정보
+let grid = [];
+let startD = course.finishD - settings.length;
+let decided = null;
 let resultTimer = 0;
 let timeScale = 1;
 let excitement = 0;
 let lastHud = 0;
 let clockT = 0;
+const P = {}; // course.point 결과 재사용
 
-function buildField(list) {
-  track?.dispose();
+/** 코스 좌표 → 월드 좌표 */
+function cp(d, lat, up, out = new THREE.Vector3()) {
+  course.point(d, lat, P);
+  return out.set(P.x, P.y + up, P.z);
+}
+
+function buildRunners(list) {
   runners.forEach((r) => { scene.remove(r.root); r.dispose(); });
   const rng = makeRng();
-  track = createTrack(scene, { lanes: list.length, length: settings.length });
   runners = list.map((name, i) => {
-    const r = new Runner({ name, color: COLORS[i % COLORS.length], index: i, z: laneZ(i, list.length), rng });
+    const r = new Runner({ name, color: COLORS[i % COLORS.length], index: i, rng });
     scene.add(r.root);
     return r;
   });
+  placeOnGrid(startGrid(list.length, halfW, () => 0.999)); // 미리보기: 입력 순서대로
 }
 
-function resetRunners() {
-  runners.forEach((r) => {
-    r.x = 0;
+function placeOnGrid(g) {
+  grid = g;
+  runners.forEach((r, i) => {
     r.crown.visible = false;
-    r.fallAmount = 0;
+    setRunnerPos(r, startD + g[i].dist, g[i].lat);
+  });
+}
+
+function setRunnerPos(r, d, lat) {
+  course.point(d, lat, P);
+  r.root.position.set(P.x, P.y + 0.03, P.z);
+  r.root.rotation.y = P.heading;
+  return P;
+}
+
+function setLength(len) {
+  settings.length = len;
+  startD = course.finishD - len;
+  world.setStart(startD);
+  drawMinimapBase();
+  camMode = { type: 'setup', until: Infinity, cut: true };
+  if (runners.length) placeOnGrid(grid.length === runners.length ? grid : startGrid(runners.length, halfW, () => 0.999));
+}
+
+// ───────── 미니맵 ─────────
+const mm = { ctx: ui.minimap.getContext('2d'), base: document.createElement('canvas'), scale: 1, ox: 0, oz: 0 };
+function drawMinimapBase() {
+  const W = ui.minimap.width, H = ui.minimap.height;
+  mm.base.width = W; mm.base.height = H;
+  const c = mm.base.getContext('2d');
+  let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+  for (let d = startD - 5; d <= course.finishD + 10; d += 2) {
+    course.point(d, 0, P);
+    minX = Math.min(minX, P.x); maxX = Math.max(maxX, P.x); minZ = Math.min(minZ, P.z); maxZ = Math.max(maxZ, P.z);
+  }
+  const pad = 14;
+  mm.scale = Math.min((W - pad * 2) / (maxX - minX), (H - pad * 2) / (maxZ - minZ));
+  mm.ox = W / 2 - ((minX + maxX) / 2) * mm.scale;
+  mm.oz = H / 2 - ((minZ + maxZ) / 2) * mm.scale;
+  c.clearRect(0, 0, W, H);
+  // 강
+  c.strokeStyle = 'rgba(80,160,230,0.55)'; c.lineWidth = 5; c.beginPath();
+  course.river.forEach(([x, z], i) => { const X = x * mm.scale + mm.ox, Z = z * mm.scale + mm.oz; i ? c.lineTo(X, Z) : c.moveTo(X, Z); });
+  c.stroke();
+  // 코스
+  c.lineCap = 'round'; c.lineJoin = 'round';
+  for (const [w, col] of [[7, 'rgba(255,255,255,0.18)'], [3.5, '#e2553a']]) {
+    c.strokeStyle = col; c.lineWidth = w; c.beginPath();
+    for (let d = startD; d <= course.finishD; d += 2) {
+      course.point(d, 0, P);
+      const X = P.x * mm.scale + mm.ox, Z = P.z * mm.scale + mm.oz;
+      d === startD ? c.moveTo(X, Z) : c.lineTo(X, Z);
+    }
+    c.stroke();
+  }
+  const mark = (d, col) => {
+    course.point(d, 0, P);
+    c.fillStyle = col; c.strokeStyle = '#0d1830'; c.lineWidth = 2;
+    c.beginPath(); c.arc(P.x * mm.scale + mm.ox, P.z * mm.scale + mm.oz, 5, 0, Math.PI * 2); c.fill(); c.stroke();
+  };
+  mark(startD, '#ffffff');
+  mark(course.finishD, '#ffcf3f');
+}
+function drawMinimap() {
+  const c = mm.ctx;
+  c.clearRect(0, 0, ui.minimap.width, ui.minimap.height);
+  c.drawImage(mm.base, 0, 0);
+  if (!sim) return;
+  // 뒤에서부터 그려서 선두가 위에 보이게
+  [...sim.runners].sort((a, b) => a.dist - b.dist).forEach((p) => {
+    course.point(startD + p.dist, p.lat, P);
+    c.fillStyle = runners[p.i].color;
+    c.strokeStyle = decided && decided.winners.has(p.i) ? '#ffcf3f' : '#0d1830';
+    c.lineWidth = 1.5;
+    c.beginPath(); c.arc(P.x * mm.scale + mm.ox, P.z * mm.scale + mm.oz, 3.6, 0, Math.PI * 2); c.fill(); c.stroke();
   });
 }
 
@@ -121,7 +199,7 @@ function onNamesChanged() {
     const show = list.slice(0, MAX_PLAYERS);
     if (show.length && show.join('\n') !== names.join('\n')) {
       names = show;
-      buildField(names);
+      buildRunners(names);
     }
   }, 250);
 }
@@ -141,13 +219,9 @@ ui.winCount.addEventListener('change', () => { settings.winners = parseInt(ui.wi
 
 document.querySelectorAll('.seg-btn').forEach((btn) => {
   btn.addEventListener('click', () => {
-    const group = btn.parentElement;
-    group.querySelectorAll('.seg-btn').forEach((b) => { b.classList.toggle('on', b === btn); b.setAttribute('aria-checked', String(b === btn)); });
+    btn.parentElement.querySelectorAll('.seg-btn').forEach((b) => { b.classList.toggle('on', b === btn); b.setAttribute('aria-checked', String(b === btn)); });
     if (btn.dataset.mode) settings.mode = btn.dataset.mode;
-    if (btn.dataset.len) {
-      settings.length = Number(btn.dataset.len);
-      if (names.length) buildField(names);
-    }
+    if (btn.dataset.len) setLength(Number(btn.dataset.len));
   });
 });
 
@@ -162,16 +236,19 @@ ui.startBtn.addEventListener('click', () => {
   if (list.length > MAX_PLAYERS) { showError(`참가자는 최대 ${MAX_PLAYERS}명까지 가능해요.`); return; }
   unlockAudio();
   clearTimeout(rebuildTimer);
-  if (list.join('\n') !== names.join('\n')) { names = list; buildField(names); }
+  if (list.join('\n') !== names.join('\n')) { names = list; buildRunners(names); }
   startRace();
 });
 ui.againBtn.addEventListener('click', () => { unlockAudio(); startRace(); });
 ui.editBtn.addEventListener('click', () => {
   ui.result.hidden = true;
   ui.hud.hidden = true;
+  ui.minimap.hidden = true;
   ui.setup.hidden = false;
   confetti.stop();
-  resetRunners();
+  sim = null;
+  decided = null;
+  placeOnGrid(startGrid(runners.length, halfW, () => 0.999));
   phase = 'setup';
 });
 
@@ -179,21 +256,30 @@ function showError(msg) { ui.nameError.textContent = msg; ui.nameError.hidden = 
 
 // ───────── 레이스 진행 ─────────
 function startRace() {
-  resetRunners();
   confetti.stop();
-  sim = new RaceSim(runners.length, settings.length, makeRng());
+  const rng = makeRng();
+  placeOnGrid(startGrid(runners.length, halfW, rng));
+  sim = new RaceSim(runners.length, settings.length, rng, {
+    halfW,
+    grid,
+    slopeAt: (d) => course.slope(startD + d),
+    curvAt: (d) => { course.point(startD + d, 0, P); return P.curv; },
+  });
   decided = null;
   resultTimer = 0;
   timeScale = 1;
+  camMode = null;
   ui.setup.hidden = true;
   ui.result.hidden = true;
   ui.hud.hidden = false;
+  ui.minimap.hidden = false;
   ui.feed.innerHTML = '';
   const k = settings.winners;
   ui.hudMode.textContent = settings.mode === 'first' ? `🥇 1등 ${k}명` : `🐢 꼴등 ${k}명`;
   ui.hudTime.textContent = '0.00s';
   ui.progressBar.style.width = '0%';
   buildRankRows();
+  drawMinimap();
   phase = 'countdown';
   runCountdown();
 }
@@ -207,7 +293,7 @@ function runCountdown() {
     ui.countdown.hidden = false;
     ui.countdown.textContent = s;
     ui.countdown.classList.remove('pop', 'go');
-    void ui.countdown.offsetWidth; // 애니메이션 재시작
+    void ui.countdown.offsetWidth;
     ui.countdown.classList.add('pop');
     if (s === 'GO!') {
       ui.countdown.classList.add('go');
@@ -220,7 +306,7 @@ function runCountdown() {
     i++;
     setTimeout(tick, 800);
   };
-  setTimeout(tick, 400);
+  setTimeout(tick, 500);
 }
 
 function feed(text) {
@@ -232,7 +318,6 @@ function feed(text) {
   setTimeout(() => el.remove(), 2700);
 }
 
-/** 당첨 결정 여부 판단 */
 function checkDecision() {
   const n = runners.length, k = settings.winners;
   const need = settings.mode === 'first' ? k : n - k;
@@ -243,11 +328,12 @@ function checkDecision() {
   winners.forEach((p) => { runners[p.i].crown.visible = true; });
   ui.slowmo.hidden = true;
   sfx.fanfare();
-  confetti.burst(settings.length, track.width);
+  course.point(course.finishD, 0, P);
+  confetti.burst(new THREE.Vector3(P.x, P.y, P.z), P.heading, halfW * 2);
   resultTimer = 1.8;
 }
 
-/** 지금 접전이라 슬로모션이 필요한가? */
+/** 당첨이 갈리는 두 선수가 결승선 근처에서 접전인가? */
 function needSlowmo() {
   if (decided) return false;
   const n = runners.length, k = settings.winners;
@@ -255,13 +341,14 @@ function needSlowmo() {
   const open = sim.runners.filter((p) => !p.finished).sort((a, b) => b.dist - a.dist);
   const a = open[need - 1], b = open[need];
   if (!a || !b) return false;
-  return a.dist > settings.length - 6 && a.dist - b.dist < 1.3;
+  return a.dist > settings.length - 7 && a.dist - b.dist < 1.3;
 }
 
 function showResult() {
   phase = 'result';
   ui.hud.hidden = true;
   ui.feed.innerHTML = '';
+  decided.rank = sim.ranking(); // 결정 이후 골인한 선수 기록까지 반영
   const winners = decided.rank.filter((p) => decided.winners.has(p.i));
   ui.resultEyebrow.textContent = settings.mode === 'first' ? `🥇 1등 당첨 · ${winners.length}명` : `🐢 꼴등 당첨 · ${winners.length}명`;
   ui.winnerNames.innerHTML = '';
@@ -321,88 +408,143 @@ function updateHud() {
     if (p.finished) st = `${p.finishTime.toFixed(2)}s`;
     else if (p.fallT >= 0) st = '꽈당!';
     else if (p.boostT > 0) st = '부스터';
-    else if (idx === sim.finishedCount) st = sim.finishedCount ? `-${(settings.length - p.dist).toFixed(1)}m` : '선두';
+    else if (idx === sim.finishedCount) st = `${Math.max(0, settings.length - p.dist).toFixed(0)}m 남음`;
     else st = `-${(leadDist - p.dist).toFixed(1)}m`;
     row.st.textContent = st;
   });
   ui.hudTime.textContent = `${sim.time.toFixed(2)}s`;
   const maxDist = Math.max(...sim.runners.map((p) => p.dist));
-  ui.progressBar.style.width = `${Math.min(100, (maxDist / settings.length) * 100)}%`;
+  ui.progressBar.style.width = `${Math.min(100, Math.max(0, maxDist / settings.length) * 100)}%`;
 }
 
 // ───────── 카메라 ─────────
-function updateCamera(dt) {
-  const W = track ? track.width : 9;
-  const L = settings.length;
-  const portrait = camera.aspect < 0.8;
+// 중계방송처럼 여러 앵글을 몇 초마다 컷 전환한다.
+const CAM_MODES = ['chase', 'side', 'aerial', 'front', 'low', 'chase'];
+let camMode = null; // { type, until }
+const camRight = new THREE.Vector3();
 
-  if (phase === 'setup' || phase === 'countdown' || !sim) {
-    const t = clockT * 0.18;
-    const sway = phase === 'setup' ? Math.sin(t) * 3 : 0;
-    wantPos.set(-7 - W * 0.15 + sway, 3.2 + W * 0.22, W / 2 + 4 + W * (portrait ? 0.9 : 0.5));
-    wantLook.set(portrait ? 1 : 3.5, 0.9, 0);
-  } else if (phase === 'result' || decided) {
-    // 당첨자들을 정면에서 비춤
-    const ws = runners.filter((r) => decided && decided.winners.has(r.index));
-    let cx = 0, cz = 0;
-    ws.forEach((r) => { cx += r.x; cz += r.root.position.z; });
-    cx /= ws.length || 1; cz /= ws.length || 1;
-    let spread = 0;
-    ws.forEach((r) => { spread = Math.max(spread, Math.abs(r.root.position.z - cz)); });
-    const d = 6.5 + spread * (portrait ? 2.4 : 1.4);
-    wantPos.set(cx + d * 0.8, 2.4 + spread * (portrait ? 0.7 : 0.3), cz + d * 0.6);
-    wantLook.set(cx, 1.3, cz);
-    if (portrait) {
-      wantLook.y -= d * 0.45; // 결과 패널이 아래에 있으므로 당첨자를 화면 위쪽에
-    } else {
-      // 결과 패널이 오른쪽에 있으므로 당첨자를 화면 왼쪽에: 시선을 카메라 오른쪽으로 민다
-      const dir = new THREE.Vector3().subVectors(wantLook, wantPos).setY(0).normalize();
-      const right = new THREE.Vector3(-dir.z, 0, dir.x);
-      wantLook.addScaledVector(right, d * 0.32);
-    }
-  } else {
-    const open = sim.runners.filter((p) => !p.finished);
-    const pool = open.length ? open : sim.runners;
-    let lead = -Infinity, sum = 0;
-    pool.forEach((p) => { lead = Math.max(lead, p.dist); sum += p.dist; });
-    const mean = sum / pool.length;
-    const w = settings.mode === 'first' ? 0.65 : 0.35;
-    const focus = Math.min(L + 6, lead * w + mean * (1 - w));
-    if (lead > L - 16 && lead <= L + 2) {
-      // 결승선 카메라: 결승선 너머에서 다가오는 선수들을 비춤
-      wantPos.set(L + 7 + W * 0.25, 2.6 + W * 0.12, W / 2 + 3 + W * (portrait ? 0.9 : 0.35));
-      wantLook.set(Math.min(focus, L) - 3, 1, -W * 0.05);
-    } else if (portrait) {
-      // 세로 화면: 뒤에서 따라가는 추격 카메라 (레인이 화면 가로로 펼쳐짐)
-      const spread = Math.min(18, lead - Math.min(...pool.map((p) => p.dist)));
-      wantPos.set(focus - 7 - W * 0.3 - spread * 0.3, 3.4 + W * 0.25 + spread * 0.1, W * 0.12 + 1);
-      wantLook.set(focus + 4, 0.6, -W * 0.05);
-    } else {
-      const spread = Math.min(18, lead - Math.min(...pool.map((p) => p.dist)));
-      const back = 5.5 + W * 0.15 + spread * 0.3;
-      wantPos.set(focus - back, 3 + W * 0.17 + spread * 0.1, W / 2 + 3 + W * (portrait ? 0.8 : 0.3) + spread * 0.2);
-      wantLook.set(focus + 2.5, 0.9, 0);
-    }
+function pickCam(type) {
+  if (!type) {
+    const pool = CAM_MODES.filter((m) => !camMode || m !== camMode.type);
+    type = pool[Math.floor(Math.random() * pool.length)];
   }
-  const a = 1 - Math.exp(-dt * (phase === 'result' ? 1.6 : 2.6));
-  camPos.lerp(wantPos, a);
-  camLook.lerp(wantLook, a);
+  camMode = { type, until: clockT + 4.5 + Math.random() * 3, cut: true };
+}
+
+/** 피사체가 화면 한쪽에 오도록 시선을 옆으로 민다 (amount>0: 피사체가 왼쪽에) */
+function shiftLook(amount) {
+  camRight.subVectors(wantLook, wantPos).setY(0).normalize();
+  camRight.set(-camRight.z, 0, camRight.x);
+  wantLook.addScaledVector(camRight, amount);
+}
+
+function packFocus() {
+  const open = sim.runners.filter((p) => !p.finished);
+  const pool = open.length ? open : sim.runners;
+  let lead = -Infinity, back = Infinity, sum = 0, latSum = 0;
+  pool.forEach((p) => { lead = Math.max(lead, p.dist); back = Math.min(back, p.dist); sum += p.dist; latSum += p.lat; });
+  const mean = sum / pool.length;
+  const w = settings.mode === 'first' ? 0.65 : 0.35;
+  const focus = Math.min(settings.length + 8, lead * w + mean * (1 - w));
+  return { focus: startD + focus, lead: startD + lead, spread: Math.min(25, lead - back), lat: (latSum / pool.length) * 0.5 };
+}
+
+function updateCamera(dt) {
+  const portrait = camera.aspect < 0.8;
+  let rate = 3.5;
+
+  if (phase === 'setup' || !sim) {
+    const t = clockT * 0.2;
+    const n = runners.length;
+    cp(startD + 7 + n * 0.12 + Math.sin(t) * 2, Math.sin(t * 0.7) * halfW * 0.8, 2.6 + n * 0.08, wantPos);
+    cp(startD - 1.5 - Math.floor(n / 11) * 0.7, 0, 1, wantLook);
+    if (portrait) wantLook.y -= 5; else shiftLook(-3.2);
+    rate = 2;
+  } else if (phase === 'countdown') {
+    cp(startD + 6, -halfW * 0.5, 1.7, wantPos);
+    cp(startD - 1, 0, 1.1, wantLook);
+    if (portrait) wantLook.y -= 0.6;
+    rate = 2.5;
+  } else if (decided) {
+    // 당첨자들을 정면에서
+    const ws = sim.runners.filter((p) => decided.winners.has(p.i));
+    let d = 0, lat = 0, dMin = Infinity, dMax = -Infinity;
+    ws.forEach((p) => { d += p.dist; lat += p.lat; dMin = Math.min(dMin, p.dist); dMax = Math.max(dMax, p.dist); });
+    d = startD + d / ws.length; lat /= ws.length;
+    const spread = Math.min(30, dMax - dMin) + (ws.length > 1 ? 3 : 0);
+    const back = 6 + spread * (portrait ? 1.1 : 0.7);
+    // 골인 후 감속하며 앞으로 오므로, 멈출 지점보다 앞에 카메라를 둔다
+    const camD = Math.max(d + back, startD + settings.length + 34);
+    cp(camD, lat + 3 + spread * 0.3, 2.2 + spread * 0.25, wantPos);
+    cp(d - spread * 0.2, lat, 1.2, wantLook);
+    if (portrait) wantLook.y -= back * 0.45; else shiftLook(back * 0.3);
+    rate = 1.8;
+  } else {
+    const f = packFocus();
+    const nearFinish = f.lead > course.finishD - 32 && f.lead < course.finishD + 1;
+    if (nearFinish && (!camMode || camMode.type !== 'finish')) pickCam('finish');
+    else if (!nearFinish && (!camMode || camMode.type === 'finish' || clockT > camMode.until)) pickCam(camMode ? null : 'chase');
+
+    course.point(f.focus, 0, P);
+    const side = P.curv > 0.004 ? 1 : P.curv < -0.004 ? -1 : 1; // 커브 바깥쪽
+    const s = f.spread;
+    switch (camMode.type) {
+      case 'chase':
+        cp(f.focus - 10 - s * 0.45, f.lat * 0.5 + (portrait ? 0 : 1.5), 4.2 + s * 0.15, wantPos);
+        cp(f.focus + 7, f.lat * 0.5, 0.8, wantLook);
+        break;
+      case 'low':
+        cp(f.focus - 5 - s * 0.3, f.lat + halfW * 0.55, 1.3, wantPos);
+        cp(f.focus + 4, f.lat, 1.3, wantLook);
+        break;
+      case 'side':
+        cp(f.focus - 1, side * (halfW + 7 + s * 0.35), 3 + s * 0.1, wantPos);
+        cp(f.focus + 1.5, 0, 0.9, wantLook);
+        break;
+      case 'aerial':
+        cp(f.focus - 14 - s * 0.3, -side * 12, 17 + s * 0.4, wantPos);
+        cp(f.focus + 5, 0, 0, wantLook);
+        break;
+      case 'front':
+        cp(f.focus + 11 + s * 0.2, f.lat * 0.5 - 1.5, 2.3 + s * 0.1, wantPos);
+        cp(f.focus - 2, f.lat * 0.5, 1.1, wantLook);
+        break;
+      case 'finish':
+        cp(course.finishD + 9, halfW * 0.85, 2.5, wantPos);
+        cp(Math.min(f.focus, course.finishD) - 3, 0, 1, wantLook);
+        break;
+    }
+    rate = 4.5;
+  }
+
+  // 지면 아래로 내려가지 않게
+  const g = world.groundAt(wantPos.x, wantPos.z) + 0.8;
+  if (wantPos.y < g) wantPos.y = g;
+
+  if (camMode && camMode.cut) {
+    camPos.copy(wantPos); camLook.copy(wantLook);
+    camMode.cut = false;
+  } else {
+    const a = 1 - Math.exp(-dt * rate);
+    camPos.lerp(wantPos, a);
+    camLook.lerp(wantLook, a);
+  }
   camera.position.copy(camPos);
   camera.lookAt(camLook);
 
-  // 그림자 카메라가 시점을 따라다니도록
-  env.sun.target.position.set(camLook.x, 0, 0);
-  env.sun.position.set(camLook.x - 20, 40, 25);
+  world.sun.target.position.copy(camLook);
+  world.sun.position.set(camLook.x - 25, camLook.y + 45, camLook.z + 30);
 }
 
 // ───────── 메인 루프 ─────────
 const clock = new THREE.Clock();
+let lastMini = 0;
 function loop() {
   requestAnimationFrame(loop);
   const rawDt = Math.min(0.05, clock.getDelta());
   clockT += rawDt;
 
-  if (phase === 'race' || phase === 'result') {
+  if (sim && (phase === 'race' || phase === 'result')) {
     const slow = needSlowmo();
     ui.slowmo.hidden = !slow || phase !== 'race';
     timeScale += ((slow ? 0.3 : 1) - timeScale) * Math.min(1, rawDt * 6);
@@ -422,12 +564,13 @@ function loop() {
 
     sim.runners.forEach((p) => {
       const r = runners[p.i];
-      r.x = p.dist;
+      const pt = setRunnerPos(r, startD + p.dist, p.lat);
       const won = decided && decided.winners.has(p.i);
-      const state = p.v > 0.4 ? 'run' : won ? 'celebrate' : 'idle';
-      r.animate(dt, { state, speed: p.v, fall: sim.fallAmount(p), boost: p.boostT > 0, time: clockT });
+      const state = p.v > 0.5 ? 'run' : won ? 'celebrate' : 'idle';
+      r.animate(dt, { state, speed: p.v, fall: sim.fallAmount(p), boost: p.boostT > 0, time: clockT, curv: pt.curv });
     });
     if (phase === 'race' && clockT - lastHud > 0.1) { lastHud = clockT; updateHud(); }
+    if (clockT - lastMini > 0.066) { lastMini = clockT; drawMinimap(); }
 
     const lead = Math.max(...sim.runners.map((p) => p.dist));
     const target = decided ? 1 : Math.max(0.15, Math.min(1, (lead / settings.length) ** 2));
@@ -440,17 +583,20 @@ function loop() {
   }
 
   runners.forEach((r) => r.fitLabel(camera.position));
-  track?.update(rawDt, excitement);
+  world.update(rawDt, excitement, camera);
   updateCamera(rawDt);
   renderer.render(scene, camera);
 }
 
 // 첫 화면: 예시 참가자들이 출발선에 서 있는 상태
+setLength(settings.length);
 onNamesChanged();
 names = parseNames(ui.names.value).slice(0, MAX_PLAYERS);
 clearTimeout(rebuildTimer);
-if (names.length) buildField(names);
+if (names.length) buildRunners(names);
+updateCamera(1);
+camPos.copy(wantPos); camLook.copy(wantLook);
 loop();
 
-// 웹폰트가 늦게 도착하면 이름표/표지판을 다시 그린다
-document.fonts?.ready.then(() => { if (phase === 'setup' && names.length) buildField(names); });
+// 웹폰트가 늦게 도착하면 이름표를 다시 그린다
+document.fonts?.ready.then(() => { if (phase === 'setup' && names.length) buildRunners(names); });
