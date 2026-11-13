@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>랜덤 레이스</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Black+Han+Sans&family=Noto+Sans+KR:wght@400;500;700;900&display=swap" />
+</head>
+<body>
+  <canvas id="stage"></canvas>
+
+  <!-- 상단 바: 제목 + 음소거 -->
+  <header class="topbar">
+    <div class="brand"><span class="brand-mark">RR</span><span class="brand-name">랜덤 레이스</span></div>
+    <button id="soundBtn" class="icon-btn" type="button" aria-label="소리 켜기/끄기" title="소리">🔊</button>
+  </header>
+
+  <!-- 설정 화면 -->
+  <section id="setup" class="panel setup">
+    <h1 class="setup-title">누가 걸릴까?<br /><em>달려서 정하자!</em></h1>
+    <p class="setup-sub">참가자를 입력하면 3D 트랙에서 레이스가 펼쳐집니다. 속도, 부스터, 넘어짐은 모두 무작위라 모든 참가자의 확률이 똑같아요.</p>
+
+    <label class="field-label" for="names">참가자 <span id="nameCount" class="count">0명</span></label>
+    <textarea id="names" rows="6" spellcheck="false" placeholder="한 줄에 한 명씩, 또는 쉼표로 구분"></textarea>
+    <p id="nameError" class="field-error" hidden></p>
+
+    <div class="row">
+      <div class="field">
+        <span class="field-label">당첨 기준</span>
+        <div class="seg" role="radiogroup" aria-label="당첨 기준">
+          <button type="button" class="seg-btn on" data-mode="first" role="radio" aria-checked="true">🥇 1등</button>
+          <button type="button" class="seg-btn" data-mode="last" role="radio" aria-checked="false">🐢 꼴등</button>
+        </div>
+      </div>
+      <div class="field">
+        <label class="field-label" for="winCount">당첨 인원</label>
+        <div class="stepper">
+          <button type="button" id="winMinus" aria-label="줄이기">−</button>
+          <input id="winCount" type="number" min="1" value="1" inputmode="numeric" />
+          <button type="button" id="winPlus" aria-label="늘리기">+</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="field">
+      <span class="field-label">코스 길이</span>
+      <div class="seg" role="radiogroup" aria-label="코스 길이">
+        <button type="button" class="seg-btn" data-len="60" role="radio" aria-checked="false">60m 짧게</button>
+        <button type="button" class="seg-btn on" data-len="100" role="radio" aria-checked="true">100m 보통</button>
+        <button type="button" class="seg-btn" data-len="160" role="radio" aria-checked="false">160m 길게</button>
+      </div>
+    </div>
+
+    <button id="startBtn" class="cta" type="button">레이스 시작</button>
+  </section>
+
+  <!-- 레이스 HUD -->
+  <aside id="hud" class="hud" hidden>
+    <div class="hud-head">
+      <span id="hudMode" class="hud-mode"></span>
+      <span id="hudTime" class="hud-time">0.00s</span>
+    </div>
+    <div class="progress"><div id="progressBar" class="progress-bar"></div></div>
+    <ol id="rankList" class="rank-list"></ol>
+  </aside>
+  <div id="feed" class="feed" aria-live="polite"></div>
+  <div id="countdown" class="countdown" hidden></div>
+  <div id="slowmo" class="slowmo" hidden>PHOTO FINISH</div>
+
+  <!-- 결과 화면 -->
+  <section id="result" class="panel result" hidden>
+    <p class="result-eyebrow" id="resultEyebrow">당첨</p>
+    <div id="winnerNames" class="winner-names"></div>
+    <ol id="resultList" class="result-list"></ol>
+    <div class="result-actions">
+      <button id="againBtn" class="cta" type="button">같은 멤버로 다시</button>
+      <button id="editBtn" class="ghost" type="button">참가자 수정</button>
+    </div>
+  </section>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
